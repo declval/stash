@@ -1,0 +1,85 @@
+#!/bin/sh
+
+PROGRAM=`basename $0`
+BYTES_FILE_SIZE=20
+
+usage() {
+    if [ -n "$1" ]; then
+        echo "$1"
+        echo
+    fi
+
+    echo "Usage: $PROGRAM get file_offset disk"
+    echo "       $PROGRAM set file_offset disk file"
+    echo
+    echo "Description: $PROGRAM allows you to store a file at the arbitrary"
+    echo '             byte offset on the disk. Useful when you need to'
+    echo "             reinstall an operating system and e.g. don't have a"
+    echo '             spare USB flash drive at hand.'
+}
+
+if [ "$1" = 'get' -a "$#" -ne 3 -o \
+     "$1" = 'set' -a "$#" -ne 4 -o \
+     "$1" != 'get' -a "$1" != 'set' ]; then
+    usage
+    exit 1
+fi
+
+if [ "`id --user`" -ne 0 ]; then
+    usage 'This program requires superuser privileges to access a disk'
+    exit 2
+fi
+
+cmd="$1"
+file_offset="$2"
+disk="$3"
+file="$4"
+
+if [ ! -b "$disk" ]; then
+    usage "$file does not exist or is not a block special file"
+    exit 3
+fi
+
+if [ "$cmd" = 'set' -a ! -f "$file" ]; then
+    usage "$file does not exist or is not a regular file"
+    exit 4
+fi
+
+if [ "$file_offset" -lt "$BYTES_FILE_SIZE" ]; then
+    usage "offset can't be less than $BYTES_FILE_SIZE bytes. $BYTES_FILE_SIZE \
+           bytes before the file are used to store it's size"
+    exit 5
+fi
+
+size_offset="`expr "$file_offset" - "$BYTES_FILE_SIZE"`"
+
+set_cmd() {
+    file_size="`wc -c < "$file"`"
+    disk_size="`blockdev --getsize64 "$disk"`"
+    if [ "`expr "$file_size" + "$BYTES_FILE_SIZE"`" -gt "$disk_size" ]; then
+        usage "Not enough space. \
+               Make sure $disk has enough space to store $file and \
+               $BYTES_FILE_SIZE more bytes for it's size"
+        exit 6
+    fi
+    read -p "About to write $file of size $file_size to $disk at offset $file_offset. Continue? (y/N): " response
+    if [ "$response" != 'Y' -a "$response" != 'y' ]; then
+        echo 'Aborting...'
+        exit 7
+    fi
+    echo "$file_size" | dd bs=1 of="$disk" seek="$size_offset" status=none
+    dd bs=1 if="$file" of="$disk" seek="$file_offset" status=none
+}
+
+get_cmd() {
+    file_size="`dd bs=1 count="$BYTES_FILE_SIZE" if="$disk" skip="$size_offset" status=none | head -n 1`"
+    dd bs=1 count="$file_size" if="$disk" skip="$file_offset" status=none
+}
+
+if [ "$cmd" = 'get' ]; then
+    get_cmd
+else
+    set_cmd
+fi
+
+sync
